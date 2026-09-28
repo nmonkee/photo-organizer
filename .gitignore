@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.photo_organizer_hash_cache.json
+photo_organizer_report_*.txt
+.photo_org_tmp_*/
+
+# secrets
+.env

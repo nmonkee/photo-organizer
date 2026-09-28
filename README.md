@@ -82,7 +82,7 @@ point it at `.../Backup/Photo Archives`, you get
 
 ## Companion tools
 
-Two related but genuinely separate problems live in `tools/` rather than
+Three related but genuinely separate problems live in `tools/` rather than
 being crammed into the core script:
 
 ### `tools/stage_from_cloud.py`
@@ -118,6 +118,119 @@ python tools/verify_archives.py "Old Backup.zip" --against "/path/to/Photo Archi
 ```
 
 Only delete an archive yourself after this reports 100% verified.
+
+### `tools/photo_mirror.py`
+
+Keeps a second drive as a mirror of the organized `Photo Archives` folder -
+a backup of the backup. Plug both drives in (roughly monthly) and run it:
+it does a dry run first, shows how many files are new, changed or removed,
+asks before syncing, then copies with `rsync` at background disk priority
+so it doesn't starve anything else using the drive. Safe to interrupt and
+re-run - it resumes where it left off.
+
+```
+python tools/photo_mirror.py            # dry run, confirm, sync
+python tools/photo_mirror.py --check    # check drives/rsync/digiKam only
+python tools/photo_mirror.py --verify   # also checksum-compare every file (slow)
+```
+
+It is deliberately hard to point at the wrong disk:
+
+- **Drives are pinned by volume UUID**, not just name (set in the config
+  block at the top of the script). If either drive is missing, renamed or a
+  different disk, it refuses - so nothing is ever written to the boot drive
+  under an empty `/Volumes/...` path.
+- **Nothing is lost on the mirror.** Files deleted from, or changed on, the
+  source are moved into `_rsync_removed/<date>/` on the mirror drive rather
+  than destroyed. Prune old dated folders when you're happy.
+- **Refuses an empty or suspiciously small source**, and asks again (or
+  blocks a `--yes` run) if more than 100 files would be removed or replaced.
+- **digiKam-aware**: while digiKam is running its databases
+  (`digikam4.db` etc.) are skipped, since a copy taken mid-write can be
+  inconsistent - re-run once digiKam is closed. If digiKam has written tags
+  into thousands of photos, use `--no-keep-removed` so the old versions
+  aren't kept (they wouldn't fit).
+
+Needs rsync 3.1+ (`brew install rsync`; macOS ships openrsync, which lacks
+`-X` and `--info=progress2`). Logs go to `~/Library/Logs/photo-mirror/`.
+
+## digiKam tools
+
+These work alongside digiKam, which holds the people tags, face boxes and
+dates for the organised archive. Anything that moves files also updates
+digiKam's records, so tags follow the photos. Every tool that changes
+anything has `--dry-run`, asks before acting, refuses to run while digiKam
+is open, backs up digiKam's databases first
+(`~/Pictures/digiKam DB backup <date>`), never deletes (removed files go to
+`<drive>/Photo Archives - removed <what> <date>/`), and logs to
+`~/Library/Logs/photo-tools/`. After a real run: open digiKam, let it scan,
+then **Tools > Maintenance > "Perform database cleaning"**.
+
+Extra requirement: `pip install numpy`.
+
+### `tools/person_export.py` + `tools/person_sort.py`
+
+Gather everyone photographed with one person into a folder, then tidy it:
+keep the best copy of each photo, name it by the date taken, file it by
+year (`2013/2013-08-06 08.07.13.jpg`), put undated ones in `Undated/`
+(named after the most meaningful copy), scans in `Scanned prints/`, other
+copies in `_duplicates/`, and delete face crops.
+
+```
+python tools/person_export.py "Jane Smith"          # copies to ~/Pictures/Jane Smith
+python tools/person_sort.py ~/Pictures/"Jane Smith" --dry-run
+python tools/person_sort.py ~/Pictures/"Jane Smith"
+python tools/person_sort.py ~/Pictures/"Jane Smith" --resort   # undo + sort again
+```
+
+Sort locally, then move the finished folder to Google Drive to share.
+
+### `tools/archive_dedupe.py`
+
+Removes near-duplicates that exact hashing can't see - thumbnails, 1024px
+exports, EXIF-stripped copies, Apple face crops - using digiKam's own
+image fingerprints to find candidates (minutes, no drive reads) and a real
+pixel comparison to confirm them (burst shots are not duplicates). People
+tags on a copy are added to the kept original before it's moved.
+
+```
+python tools/archive_dedupe.py --dry-run
+python tools/archive_dedupe.py
+```
+
+### `tools/noexif_organise.py`
+
+Sorts `NO EXIF` into Year/Month (for Dropbox-style `2020-07-14 18.22.05.jpg`
+names and metadata dates - the date is written into EXIF too), and
+`Screenshots`, `Scanned prints`, `Facebook downloads`,
+`Photo books & calendars`, `Apple previews (no original)` and
+`Videos (undated)`. Byte-identical copies go to the holding folder.
+
+### `tools/archive_audit.py`
+
+Read-only health check: photos in the wrong Year/Month folder, photos whose
+digiKam date is wrong (it often records when QuickTime/Photos last saved a
+file rather than when it was taken), scanned prints outside
+`Scanned prints`, and byte-identical files anywhere. Optional fixes:
+`--fix-digikam-dates`, `--move-scans`, `--remove-identical`.
+
+### Shared modules and tests
+
+`digikam_db.py` (database access and safe writes), `similarity.py`
+(fingerprint search + pixel check, with the thresholds and how they were
+calibrated) and `media_utils.py` (file kinds, dates, exiftool). Tests for
+the database-changing helpers run on a throw-away copy of the database:
+
+```
+python -m unittest discover -s tests -v
+```
+
+**If a tool reports "Operation not permitted" on the archive drive**: macOS
+has cached a stale refusal. System Settings > Privacy & Security > Files
+and Folders > Terminal > switch "Removable Volumes" off and on again.
+
+**Scanned prints**: the February 2018 scanning session stamped every scan's
+name *and* EXIF with the scan date. The tools never use that date.
 
 ## Design notes / why some things work the way they do
 
