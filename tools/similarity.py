@@ -32,6 +32,8 @@ from PIL import Image
 from media_utils import open_image
 
 HAAR_MAX_GAP = 8.0         # fingerprint search cut-off (true copies <= 4.3; margin for safety)
+HAAR_NEAR_IDENTICAL = 4.5  # for same-size pairs only near-identical fingerprints are checked
+                           # (same-size neighbours are mostly burst shots - no need to read them)
 PIXEL_MAX_DIFF = 0.05      # mean abs difference of normalised 64x64 greyscale: copies < 0.05
 ASPECT_TOLERANCE = 0.08    # copies must have (nearly) the same shape
 
@@ -108,3 +110,17 @@ def pixel_difference(fa, fb):
 
 def same_photo(fa, fb):
     return fa is not None and fb is not None and pixel_difference(fa, fb) < PIXEL_MAX_DIFF
+
+
+def rotated_difference(fa, fb):
+    """Difference if b is a (90 or 270 degree) rotation of a; inf if the shapes don't fit.
+    Old iPhoto 'rotate' fixes were saved as a new file, so the same photo exists twice
+    - once sideways, once upright - and a plain comparison says they differ."""
+    (a, ra), (b, rb) = fa, fb
+    if abs(ra - 1 / rb) / max(ra, 1 / rb) >= ASPECT_TOLERANCE:
+        return float("inf")
+    return min(float(np.abs(a - np.rot90(b, k)).mean()) for k in (1, 3))
+
+
+def same_photo_rotated(fa, fb):
+    return fa is not None and fb is not None and rotated_difference(fa, fb) < PIXEL_MAX_DIFF
