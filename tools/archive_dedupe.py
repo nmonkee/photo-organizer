@@ -284,6 +284,15 @@ def main():
                 rot_keep[sideways] = upright
         if args.include_rotated:
             keep.update(rot_keep)
+        # A group's keeper can itself be the sideways half of a rotated pair; point every copy
+        # straight at the file that really stays, so tags are copied to it before anything moves.
+        for a in list(keep):
+            k, seen = keep[a], {a}
+            while k in keep and k not in seen:
+                seen.add(k)
+                k = keep[k]
+            keep[a] = k
+        assert not set(keep.values()) & set(keep), "a kept file is also being moved"
         faces = [] if args.no_faces else [i for i in lib.images if mu.is_face_crop(lib.rel(i)[1])]
         orphans = [os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs
                    if f.startswith("._") and mu.is_appledouble(os.path.join(d, f))]
