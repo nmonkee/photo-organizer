@@ -13,6 +13,10 @@ After years of imports, exports and tools, three things quietly go wrong:
   2. Scanned prints filed under the day they were scanned (their name and
      EXIF date are the scanning session, 25 Feb 2018).
   3. Byte-identical copies of the same file in two places (videos included).
+  4. Files whose name lies about what they are: JPEGs named .png/.heic/.tif,
+     videos named .jpg - apps pick their decoder by extension, so these show
+     as broken and can crash viewers - and files with no picture at all
+     (empty, all zeros, macOS '._' metadata, or a copy that lost its data).
 
 Checks only read. Each fix needs digiKam closed, backs its databases up
 first, asks before changing anything and logs every change:
@@ -23,6 +27,8 @@ first, asks before changing anything and logs every change:
     python tools/archive_audit.py --move-scans             # move stray scans into "Scanned prints"
     python tools/archive_audit.py --remove-identical       # keep one of each identical set; move the
                                                            # rest to the holding folder (tags kept)
+    python tools/archive_audit.py --fix-extensions         # give mislabelled files their true extension
+                                                           # (tags kept); move empty/damaged ones out
 
 Full lists go to ~/Library/Logs/photo-tools/archive_audit_<date>.csv.
 """
@@ -132,6 +138,38 @@ def check_identical(root, say, rows):
     return groups
 
 
+def check_contents(root, say, rows):
+    """Files whose contents don't match their extension, and files with no picture data.
+    Returns (renames: [(path, true extension, kind)], damaged: [(path, reason)])."""
+    renames, damaged, counts = [], [], collections.Counter()
+    for d, dirs, files in os.walk(root):
+        dirs[:] = [x for x in dirs if not x.startswith(".")]
+        for f in files:
+            ext = os.path.splitext(f)[1].lower()
+            if f.startswith(".") or ext not in mu.EXT_KIND:
+                continue
+            p = os.path.join(d, f)
+            kind = mu.sniff(p)
+            if kind in ("empty", "zeros", "appledouble", "unknown"):
+                damaged.append((p, kind))
+                counts[f"no picture ({kind})"] += 1
+            elif kind == "jpeg" and mu.mostly_empty(p) and not mu.decodes(p):
+                damaged.append((p, "picture data lost (zero bytes throughout, won't decode)"))
+                counts["picture data lost"] += 1
+            elif kind != mu.EXT_KIND[ext] and not (kind in ("mov", "mp4") and mu.EXT_KIND[ext] in ("mov", "mp4")):
+                renames.append((p, mu.TRUE_EXT[kind], kind))
+                counts[f"{ext} that is really {kind}"] += 1
+    for k, v in counts.most_common():
+        say(f"    {v:6,}  {k}")
+    if not counts:
+        say("         0  problems")
+    for p, e, k in renames:
+        rows.append(("wrong extension", os.path.relpath(p, root), f"really {k}", ""))
+    for p, why in damaged:
+        rows.append(("no usable picture", os.path.relpath(p, root), why, ""))
+    return renames, damaged
+
+
 def keep_first(group, lib):
     """Order an identical set so the one to keep comes first: most people tags, then a name
     without a '_d261fc3f' collision suffix, then the shortest name."""
@@ -151,6 +189,9 @@ def main():
     ap.add_argument("--move-scans", action="store_true", help="move stray scanned prints to 'Scanned prints'")
     ap.add_argument("--remove-identical", action="store_true",
                     help="keep one file of each identical set, move the others to the holding folder")
+    ap.add_argument("--fix-extensions", action="store_true",
+                    help="rename mislabelled files to their true extension; move empty/damaged ones out")
+    ap.add_argument("--skip-contents", action="store_true", help="skip the file-contents check")
     ap.add_argument("--yes", "-y", action="store_true", help="don't ask for confirmation")
     args = ap.parse_args()
     say, log_path = dk.open_log("archive_audit")
@@ -169,14 +210,23 @@ def main():
         if not args.skip_identical:
             say("3. Identical files (reads every same-size file - slow)")
             identical = check_identical(root, say, rows)
+        renames, damaged = [], []
+        if args.fix_extensions and args.skip_contents:
+            raise dk.Abort("--fix-extensions needs the file-contents check (drop --skip-contents).")
+        if not args.skip_contents:
+            say("4. File contents vs names (opens every file)")
+            renames, damaged = check_contents(root, say, rows)
         csv_path = log_path.with_suffix(".csv")
         with open(csv_path, "w", newline="") as f:
             csv.writer(f).writerows(rows)
         say(f"\nFull list: {csv_path}")
 
-        if not (args.fix_digikam_dates or args.move_scans or args.remove_identical):
+        if not (args.fix_digikam_dates or args.move_scans or args.remove_identical or args.fix_extensions):
             return 0
         todo = []
+        if args.fix_extensions and (renames or damaged):
+            todo.append(f"rename {len(renames):,} mislabelled files to their true extension and move "
+                        f"{len(damaged):,} empty/damaged files to the holding folder")
         if args.remove_identical and identical:
             todo.append(f"move {sum(len(g) - 1 for g in identical):,} identical copies to the holding folder")
         if args.fix_digikam_dates and fixes:
@@ -222,6 +272,26 @@ def main():
                             mlog.writerow((p, dk.move_out(p, root, hold), keep))
                             moved += 1
                 say(f"  identical copies moved to '{hold}': {moved:,}; people tags carried over: {dict(tags)}")
+            if args.fix_extensions and (renames or damaged):
+                hold = dk.holding_dir(f"{datetime.date.today()} damaged")
+                with open(log_path.with_name(log_path.stem + "_renamed.csv"), "w", newline="") as rf:
+                    rlog = csv.writer(rf)
+                    rlog.writerow(("action", "from", "to", "why"))
+                    for p, ext, kind in renames:
+                        iid = lib.find(p)
+                        new = os.path.splitext(os.path.basename(p))[0] + ext
+                        category = 2 if kind in ("mov", "mp4", "mpeg", "avi") else 1
+                        if iid:
+                            dst = dk.rename_in_place(conn, lib, iid, new, category)
+                        else:                                   # not in digiKam yet: plain rename
+                            dst = os.path.join(os.path.dirname(p), new)
+                            if os.path.exists(dst):
+                                raise dk.Abort(f"Refusing to overwrite '{dst}'.")
+                            os.rename(p, dst)
+                        rlog.writerow(("renamed", p, dst, f"really {kind}"))
+                    for p, why in damaged:
+                        rlog.writerow(("moved out", p, dk.move_out(p, root, hold), why))
+                say(f"  renamed {len(renames):,} files; moved {len(damaged):,} damaged files to '{hold}'")
         say(f"  database check: {conn.execute('PRAGMA integrity_check').fetchone()[0]}")
         say(f"\nDone. Open digiKam and let it finish scanning. Log: {log_path}")
         return 0

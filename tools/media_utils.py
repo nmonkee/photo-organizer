@@ -72,6 +72,80 @@ def is_appledouble(path):
         return False
 
 
+# ------------------------------------------------------------------ what a file really is
+TRUE_EXT = {"jpeg": ".jpg", "png": ".png", "tiff": ".tif", "heic": ".heic", "gif": ".gif",
+            "webp": ".webp", "mov": ".mov", "mp4": ".mp4", "mpeg": ".mpg", "avi": ".avi"}
+EXT_KIND = {".jpg": "jpeg", ".jpeg": "jpeg", ".png": "png", ".tif": "tiff", ".tiff": "tiff",
+            ".heic": "heic", ".gif": "gif", ".webp": "webp", ".mov": "mov", ".mp4": "mp4", ".m4v": "mp4",
+            ".mpg": "mpeg", ".mpeg": "mpeg", ".avi": "avi", ".3gp": "mp4"}
+
+
+def sniff(path):
+    """What the file's contents are, from its first bytes (ignores the name):
+    'jpeg', 'png', 'tiff', 'heic', 'mov', 'mp4', 'mpeg', 'avi', 'webp', 'gif',
+    'appledouble', 'empty', 'zeros' (no data) or 'unknown'."""
+    with open(path, "rb") as f:
+        h = f.read(32)
+    if not h:
+        return "empty"
+    if h[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if h[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if h[:4] in (b"II*\x00", b"MM\x00*"):
+        return "tiff"
+    if h[4:8] == b"ftyp":
+        brand = h[8:12]
+        return "heic" if brand in (b"heic", b"heix", b"mif1", b"msf1") else "mov" if brand == b"qt  " else "mp4"
+    if h[4:8] in (b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot"):
+        return "mov"
+    if h[:4] in (b"\x00\x00\x01\xba", b"\x00\x00\x01\xb3"):
+        return "mpeg"
+    if h[:4] == b"RIFF":
+        return "webp" if h[8:12] == b"WEBP" else "avi"
+    if h[:3] == b"GIF":
+        return "gif"
+    if h[:4] == b"\x00\x05\x16\x07":
+        return "appledouble"
+    if h.count(0) == len(h):
+        return "zeros"
+    return "unknown"
+
+
+def mostly_empty(path, samples=16, chunk=4096, threshold=0.9):
+    """True when the file is (almost) all zero bytes throughout - its picture data was lost
+    (e.g. a copy that failed part-way) even though the header looks fine. Sampled across
+    the whole file: some apps pad good JPEGs to a fixed size with zeros at the END only,
+    which must not count."""
+    size = os.path.getsize(path)
+    if size < samples * chunk * 2:
+        return False
+    with open(path, "rb") as f:
+        f.seek(size - (1 << 16))                 # cheap first test: one read at the end
+        tail = f.read()
+        if tail.count(0) / len(tail) < 0.5:
+            return False                          # real data at the end: not empty (normal photos
+                                                  # are a few % zeros; damaged ones end ~88%)
+    zeros = total = 0                             # end is zeros: padding, or lost data? sample it
+    with open(path, "rb") as f:
+        for k in range(1, samples + 1):
+            f.seek(size * k // (samples + 2))
+            data = f.read(chunk)
+            zeros += data.count(0)
+            total += len(data)
+    return zeros / total >= threshold
+
+
+def decodes(path):
+    """True if the whole picture can be decoded (slow - use only to confirm a suspect)."""
+    try:
+        im = Image.open(path)
+        im.load()
+        return True
+    except Exception:
+        return False
+
+
 # ------------------------------------------------------------------ dates
 def parse_exif_date(value):
     if not value or str(value).startswith("0000"):

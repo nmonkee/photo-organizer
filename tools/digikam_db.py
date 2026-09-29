@@ -236,6 +236,20 @@ def move_within_archive(conn, lib, iid, root_id, new_rel):
     return folder / name
 
 
+def rename_in_place(conn, lib, iid, new_name, category=None):
+    """Rename a digiKam-known file within its folder, keeping its record (and tags). category:
+    digiKam's item type (1 image, 2 video) when the rename changes what the file is."""
+    src = lib.path(iid)
+    album = lib.images[iid][0]
+    name = free_name(conn, src.parent, album, new_name)
+    os.rename(src, src.parent / name)
+    conn.execute("UPDATE Images SET name=? WHERE id=?", (name, iid))
+    if category:
+        conn.execute("UPDATE Images SET category=? WHERE id=?", (category, iid))
+    lib.images[iid] = (album, name)
+    return src.parent / name
+
+
 def move_out(src, archive_root, holding_root):
     """Move a file to the holding folder, keeping its relative path. Returns the new path."""
     dst = holding_root / Path(src).relative_to(archive_root)
