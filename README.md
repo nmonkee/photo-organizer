@@ -214,6 +214,36 @@ file rather than when it was taken), scanned prints outside
 `Scanned prints`, and byte-identical files anywhere. Optional fixes:
 `--fix-digikam-dates`, `--move-scans`, `--remove-identical`.
 
+### `tools/import_check.py` + `tools/import_tags.py`
+
+Bring in photos from somewhere else - an old laptop, phone or backup drive -
+without duplicating what the archive already has. `import_check.py` compares
+the folder with the whole archive and reports each file as **identical**,
+**same shot** (same camera date, sub-seconds and model - e.g. an iPhone HEIC
+of a photo the archive holds as a Dropbox JPEG), **same picture** (resized or
+re-saved, date stripped - e.g. sent by WhatsApp) or **new**. With
+`--import-new <folder>` it copies only the new ones into
+`Photo Archives/<folder>/<Year>/<Month>/<Town>`, named like the rest of the
+archive. The source folder is never changed.
+
+If that folder was tagged in its own digiKam database, `import_tags.py`
+carries the people tags and face boxes across to the imported copies (and to
+the archive's own versions of photos it already had).
+
+```
+python tools/import_check.py "/Volumes/Backup/Old Laptop/Photos"
+python tools/import_check.py "/Volumes/Backup/Old Laptop/Photos" --import-new "Old Laptop"
+# open digiKam so it scans the new photos in, then quit it
+python tools/import_tags.py "/Volumes/Backup/Old Laptop/Photos" --dry-run
+python tools/import_tags.py "/Volumes/Backup/Old Laptop/Photos"
+```
+
+**Adding to a folder you've already sorted and shared:** a different version
+of a photo already there (camera JPEG vs an edit, HEIC vs JPEG, a converted
+RAW) differs by about 0.1 in the pixel check - more than the 0.05 used for
+exact copies. Treat "same camera time to the second and difference below 0.2"
+as the same shot, and look at anything else that close before adding it.
+
 ### Shared modules and tests
 
 `digikam_db.py` (database access and safe writes), `similarity.py`
